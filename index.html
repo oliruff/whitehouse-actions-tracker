@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self' https: 'unsafe-inline' 'unsafe-eval';">
     <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta http-equiv="Content-Security-Policy" 
+      content="default-src 'self' https://your-proxy-domain.com; 
+               script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; 
+               style-src 'self' 'unsafe-inline'; 
+               img-src 'self' data: https://www.whitehouse.gov;">
     <title>White House Presidential Actions Tracker</title>
     <link rel="stylesheet" href="style.css">
     <!-- Cloudflare Web Analytics -->
@@ -34,7 +39,15 @@ const CACHE_TTL = 3600000; // 1 hour
 // Check cached data
 const cachedData = localStorage.getItem('whActionsCache');
 const cacheTime = localStorage.getItem('whActionsCacheTime');
+// Update proxy URL in index.html
+const proxyUrl = 'https://whitehouse-actions-tracker.onrender.com';
 
+// Sanitize HTML content in descriptions
+function sanitizeHTML(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
 if (cachedData && cacheTime && Date.now() - cacheTime < CACHE_TTL) {
     renderActions(JSON.parse(cachedData));
     document.getElementById('loading').style.display = 'none';
@@ -138,6 +151,28 @@ function renderActions(data) {
                     'Failed to load presidential actions. Please try again later.';
             }
         }
+
+        // Enhanced data fetching with retry logic
+const MAX_RETRIES = 3;
+let retryCount = 0;
+
+async function fetchData() {
+  try {
+    const response = await fetch(`${PROXY_URL}${encodeURIComponent(WH_FEED)}`);
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    
+    const data = await response.json();
+    retryCount = 0;
+    return processData(data);
+  } catch (error) {
+    if (retryCount < MAX_RETRIES) {
+      retryCount++;
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return fetchData();
+    }
+    throw error;
+  }
+}
 
         // Initial load
         fetchPresidentialActions();

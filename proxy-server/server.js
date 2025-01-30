@@ -107,3 +107,26 @@ app.get('/proxy', rateLimiterMiddleware, async (req, res) => {
     // ... existing error handling ...
   }
 });
+
+// Enhanced security middleware
+app.use((req, res, next) => {
+    // Validate allowed HTTP methods
+    const allowedMethods = ['GET'];
+    if (!allowedMethods.includes(req.method)) {
+      return res.status(405).send('Method Not Allowed');
+    }
+    
+    // Validate content types
+    res.header('Accept', 'application/json');
+    next();
+  });
+  
+  // Rate limiting configuration
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per window
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+  
+  app.use(limiter);

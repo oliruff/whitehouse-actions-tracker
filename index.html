@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>White House Presidential Actions Tracker</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>White House Presidential Actions Tracker</h1>
+        <p>Latest executive orders, memoranda, and proclamations</p>
+    </header>
+
+    <div class="container">
+        <div id="loading" class="loader"></div>
+        <div id="actions-container"></div>
+        <div id="error-message" class="error-message"></div>
+    </div>
+
+    <footer>
+        <p>&copy; 2023 White House Action Tracker. Official documents from <a href="https://www.whitehouse.gov/presidential-actions/" target="_blank" rel="noopener" style="color: white;">whitehouse.gov</a></p>
+    </footer>
+
+    <script>
+        async function fetchPresidentialActions() {
+            try {
+                const proxyUrl = 'https://corsproxy.io/?';
+                const targetUrl = encodeURIComponent('https://www.whitehouse.gov/feed/');
+                
+                const response = await fetch(`${proxyUrl}${targetUrl}`);
+                const data = await response.json();
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(data.contents, "text/xml");
+                
+                const items = xmlDoc.getElementsByTagName('item');
+                const actionsContainer = document.getElementById('actions-container');
+                const loading = document.getElementById('loading');
+                
+                loading.style.display = 'none';
+
+                Array.from(items).forEach(item => {
+                    const categories = Array.from(item.getElementsByTagName('category'))
+                                        .map(cat => cat.textContent);
+                    
+                    if (categories.includes('Presidential Actions')) {
+                        const title = item.getElementsByTagName('title')[0].textContent;
+                        const link = item.getElementsByTagName('link')[0].textContent;
+                        const pubDate = new Date(item.getElementsByTagName('pubDate')[0].textContent);
+                        const description = item.getElementsByTagName('description')[0].textContent;
+
+                        const actionCard = document.createElement('article');
+                        actionCard.className = 'action-card';
+                        actionCard.innerHTML = `
+                            <p class="action-date">${pubDate.toLocaleDateString('en-US', { dateStyle: 'long' })}</p>
+                            <h2 class="action-title">${title}</h2>
+                            <div class="action-summary">
+                                <p>${description}</p>
+                            </div>
+                            <a href="${link}" class="full-document-link" target="_blank" rel="noopener">Read Full Document</a>
+                        `;
+                        
+                        actionsContainer.appendChild(actionCard);
+                    }
+                });
+
+                if (actionsContainer.children.length === 0) {
+                    document.getElementById('error-message').textContent = 'No recent presidential actions found.';
+                }
+
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error-message').textContent = 
+                    'Failed to load presidential actions. Please try again later.';
+            }
+        }
+
+        // Initial load
+        fetchPresidentialActions();
+    </script>
+</body>
+</html>

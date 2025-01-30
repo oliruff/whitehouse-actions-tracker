@@ -4,7 +4,7 @@ function refreshData() {
     document.getElementById('actions-container').innerHTML = '';
     document.getElementById('loading').style.display = 'block';
     document.getElementById('error-message').textContent = '';
-    fetchPresidentialActions();
+    fetchPresidentialActions(); const proxyUrl = 'https://whitehouse-actions-tracker.onrender.com';
 }
 
 // Add search functionality

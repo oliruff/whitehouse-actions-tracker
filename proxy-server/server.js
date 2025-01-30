@@ -30,14 +30,6 @@ app.use(cors({
   methods: ['GET']
 }));
 
-// Validate HTTP methods
-app.use((req, res, next) => {
-  if (!['GET'].includes(req.method)) {
-    return res.status(405).send('Method Not Allowed');
-  }
-  next();
-});
-
 // =====================
 // Redis Configuration
 // =====================
@@ -46,7 +38,6 @@ const redisClient = redis.createClient({
   legacyMode: false
 });
 
-// Rate limiter
 const rateLimiter = new RateLimiterRedis({
   storeClient: redisClient,
   keyPrefix: 'proxyLimiter',
@@ -56,28 +47,9 @@ const rateLimiter = new RateLimiterRedis({
 });
 
 // =====================
-// Caching Configuration
-// =====================
-const CACHE_TTL = 300000; // 5 minutes
-
-async function getCachedResponse(url) {
-  const cacheKey = `cache:${url}`;
-  const cached = await redisClient.get(cacheKey);
-  return cached ? JSON.parse(cached) : null;
-}
-
-async function setCachedResponse(url, data, headers) {
-  const cacheKey = `cache:${url}`;
-  await redisClient.set(cacheKey, JSON.stringify({ data, headers }), {
-    PX: CACHE_TTL
-  });
-}
-
-// =====================
 // Proxy Endpoint
 // =====================
 app.get('/proxy', 
-  // Rate limiting middleware
   async (req, res, next) => {
     try {
       await rateLimiter.consume(req.ip);
@@ -86,25 +58,21 @@ app.get('/proxy',
       res.status(429).send('Too Many Requests');
     }
   },
-  
-  // Main handler
   async (req, res) => {
     try {
       const url = decodeURIComponent(req.query.url);
       
-      // Validate URL pattern
       if (!url.startsWith('https://www.whitehouse.gov/')) {
         return res.status(400).send('Invalid URL');
       }
 
-      // Check cache
-      const cached = await getCachedResponse(url);
+      const cached = await redisClient.get(url);
       if (cached) {
-        res.set(cached.headers);
-        return res.send(cached.data);
+        const { data, headers } = JSON.parse(cached);
+        res.set(headers);
+        return res.send(data);
       }
 
-      // Fetch and cache
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       
@@ -113,7 +81,9 @@ app.get('/proxy',
         'Content-Type': response.headers.get('Content-Type')
       };
 
-      await setCachedResponse(url, data, headers);
+      await redisClient.set(url, JSON.stringify({ data, headers }), {
+        PX: 300000 // 5 minute cache
+      });
       
       res.set(headers);
       res.send(data);
@@ -126,13 +96,13 @@ app.get('/proxy',
 );
 
 // =====================
-// Server Initialization
+// Server Management
 // =====================
 async function startServer() {
   try {
     await redisClient.connect();
     app.listen(port, () => {
-      console.log(`Proxy server running on port ${port}`);
+      console.log(`Server running on port ${port}`);
       console.log(`Allowed origins: ${process.env.ALLOWED_ORIGINS || 'none'}`);
     });
   } catch (error) {
@@ -141,7 +111,6 @@ async function startServer() {
   }
 }
 
-// Handle shutdown
 process.on('SIGTERM', async () => {
   await redisClient.quit();
   process.exit(0);
@@ -152,5 +121,4 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Start application
 startServer();

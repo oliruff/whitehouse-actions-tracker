@@ -61,3 +61,49 @@ redisClient.connect().then(() => {
     console.log(`Proxy server running on port ${port}`);
   });
 });
+
+// Security headers
+app.use((req, res, next) => {
+    res.set({
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Content-Security-Policy': "default-src 'none'",
+      'Permissions-Policy': 'interest-cohort=()'
+    });
+    next();
+  });
+
+  // Add to server.js
+const cache = new Map();
+
+app.get('/proxy', rateLimiterMiddleware, async (req, res) => {
+  try {
+    const url = decodeURIComponent(req.query.url);
+    
+    // Check cache first
+    if (cache.has(url)) {
+      const { data, headers, timestamp } = cache.get(url);
+      if (Date.now() - timestamp < 300000) { // 5 minute cache
+        res.set(headers);
+        return res.send(data);
+      }
+    }
+
+    // ... existing fetch code ...
+
+    // Cache response
+    cache.set(url, {
+      data,
+      headers: {
+        'Content-Type': response.headers.get('Content-Type')
+      },
+      timestamp: Date.now()
+    });
+
+    res.set('Content-Type', response.headers.get('Content-Type'));
+    res.send(data);
+  } catch (error) {
+    // ... existing error handling ...
+  }
+});

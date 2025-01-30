@@ -8,125 +8,149 @@ const redis = require('redis');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Configure CORS
+// ======================
+// Security Configuration
+// ======================
+app.use((req, res, next) => {
+  res.set({
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Content-Security-Policy': "default-src 'none'",
+    'Permissions-Policy': 'interest-cohort=()'
+  });
+  next();
+});
+
+// =====================
+// Middleware Setup
+// =====================
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || [],
   methods: ['GET']
 }));
 
-// Redis client for rate limiting
-const redisClient = redis.createClient({
-  url: process.env.REDIS_URL
+// Validate HTTP methods
+app.use((req, res, next) => {
+  if (!['GET'].includes(req.method)) {
+    return res.status(405).send('Method Not Allowed');
+  }
+  next();
 });
 
-// Rate limiter configuration
+// =====================
+// Redis Configuration
+// =====================
+const redisClient = redis.createClient({
+  url: process.env.REDIS_URL,
+  legacyMode: false
+});
+
+// Rate limiter
 const rateLimiter = new RateLimiterRedis({
   storeClient: redisClient,
   keyPrefix: 'proxyLimiter',
-  points: 100, // 100 requests
-  duration: 60, // per 60 seconds
+  points: 100,       // 100 requests
+  duration: 60,      // per 60 seconds
+  blockDuration: 300 // Block for 5 minutes if exceeded
 });
 
-// Middleware to handle rate limiting
-const rateLimiterMiddleware = (req, res, next) => {
-  rateLimiter.consume(req.ip)
-    .then(() => next())
-    .catch(() => res.status(429).send('Too Many Requests'));
-};
+// =====================
+// Caching Configuration
+// =====================
+const CACHE_TTL = 300000; // 5 minutes
 
-// Proxy endpoint
-app.get('/proxy', rateLimiterMiddleware, async (req, res) => {
-  try {
-    const url = decodeURIComponent(req.query.url);
-    
-    // Validate URL
-    if (!url.startsWith('https://www.whitehouse.gov/')) {
-      return res.status(400).send('Invalid URL');
+async function getCachedResponse(url) {
+  const cacheKey = `cache:${url}`;
+  const cached = await redisClient.get(cacheKey);
+  return cached ? JSON.parse(cached) : null;
+}
+
+async function setCachedResponse(url, data, headers) {
+  const cacheKey = `cache:${url}`;
+  await redisClient.set(cacheKey, JSON.stringify({ data, headers }), {
+    PX: CACHE_TTL
+  });
+}
+
+// =====================
+// Proxy Endpoint
+// =====================
+app.get('/proxy', 
+  // Rate limiting middleware
+  async (req, res, next) => {
+    try {
+      await rateLimiter.consume(req.ip);
+      next();
+    } catch {
+      res.status(429).send('Too Many Requests');
     }
-
-    const response = await fetch(url);
-    const data = await response.text();
-    
-    res.set('Content-Type', response.headers.get('Content-Type'));
-    res.send(data);
-  } catch (error) {
-    console.error('Proxy error:', error);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
-// Start server
-redisClient.connect().then(() => {
-  app.listen(port, () => {
-    console.log(`Proxy server running on port ${port}`);
-  });
-});
-
-// Security headers
-app.use((req, res, next) => {
-    res.set({
-      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-      'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
-      'Content-Security-Policy': "default-src 'none'",
-      'Permissions-Policy': 'interest-cohort=()'
-    });
-    next();
-  });
-
-  // Add to server.js
-const cache = new Map();
-
-app.get('/proxy', rateLimiterMiddleware, async (req, res) => {
-  try {
-    const url = decodeURIComponent(req.query.url);
-    
-    // Check cache first
-    if (cache.has(url)) {
-      const { data, headers, timestamp } = cache.get(url);
-      if (Date.now() - timestamp < 300000) { // 5 minute cache
-        res.set(headers);
-        return res.send(data);
+  },
+  
+  // Main handler
+  async (req, res) => {
+    try {
+      const url = decodeURIComponent(req.query.url);
+      
+      // Validate URL pattern
+      if (!url.startsWith('https://www.whitehouse.gov/')) {
+        return res.status(400).send('Invalid URL');
       }
-    }
 
-    // ... existing fetch code ...
+      // Check cache
+      const cached = await getCachedResponse(url);
+      if (cached) {
+        res.set(cached.headers);
+        return res.send(cached.data);
+      }
 
-    // Cache response
-    cache.set(url, {
-      data,
-      headers: {
+      // Fetch and cache
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      
+      const data = await response.text();
+      const headers = {
         'Content-Type': response.headers.get('Content-Type')
-      },
-      timestamp: Date.now()
-    });
+      };
 
-    res.set('Content-Type', response.headers.get('Content-Type'));
-    res.send(data);
-  } catch (error) {
-    // ... existing error handling ...
+      await setCachedResponse(url, data, headers);
+      
+      res.set(headers);
+      res.send(data);
+
+    } catch (error) {
+      console.error('Proxy error:', error);
+      res.status(500).send(error.message || 'Internal Server Error');
+    }
   }
+);
+
+// =====================
+// Server Initialization
+// =====================
+async function startServer() {
+  try {
+    await redisClient.connect();
+    app.listen(port, () => {
+      console.log(`Proxy server running on port ${port}`);
+      console.log(`Allowed origins: ${process.env.ALLOWED_ORIGINS || 'none'}`);
+    });
+  } catch (error) {
+    console.error('Server startup failed:', error);
+    process.exit(1);
+  }
+}
+
+// Handle shutdown
+process.on('SIGTERM', async () => {
+  await redisClient.quit();
+  process.exit(0);
 });
 
-// Enhanced security middleware
-app.use((req, res, next) => {
-    // Validate allowed HTTP methods
-    const allowedMethods = ['GET'];
-    if (!allowedMethods.includes(req.method)) {
-      return res.status(405).send('Method Not Allowed');
-    }
-    
-    // Validate content types
-    res.header('Accept', 'application/json');
-    next();
-  });
-  
-  // Rate limiting configuration
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per window
-    standardHeaders: true,
-    legacyHeaders: false
-  });
-  
-  app.use(limiter);
+process.on('SIGINT', async () => {
+  await redisClient.quit();
+  process.exit(0);
+});
+
+// Start application
+startServer();

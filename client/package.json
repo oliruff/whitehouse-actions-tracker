@@ -1,11 +1,24 @@
 {
+  "name": "whitehouse-actions-client",
+  "version": "1.0.0",
+  "description": "Client application for White House Presidential Actions Tracker",
+  "scripts": {
+    "start": "parcel serve src/index.html",
+    "build": "parcel build src/index.html",
+    "lint": "eslint src/",
+    "prettier": "prettier --write src/"
+  },
   "dependencies": {
-    "cors": "^2.8.5",
-    "cors-anywhere": "^0.4.4",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "node-fetch": "^3.3.2",
-    "rate-limiter-flexible": "^5.0.5",
-    "redis": "^4.7.0"
-  }
+    "regenerator-runtime": "^0.14.1"
+  },
+  "devDependencies": {
+    "parcel": "^2.12.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.4",
+    "postcss": "^8.4.38",
+    "autoprefixer": "^10.4.19"
+  },
+  "browserslist": [
+    "defaults"
+  ]
 }

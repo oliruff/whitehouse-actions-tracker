@@ -7,6 +7,7 @@ const redis = require('redis');
 
 const app = express();
 const port = process.env.PORT || 3000;
+const CACHE_TTL = process.env.CACHE_TTL || 300000; // 5 minutes default
 
 // ======================
 // Security Configuration
@@ -17,7 +18,8 @@ app.use((req, res, next) => {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Content-Security-Policy': "default-src 'none'",
-    'Permissions-Policy': 'interest-cohort=()'
+    'Permissions-Policy': 'interest-cohort=()',
+    'X-XSS-Protection': '1; mode=block'
   });
   next();
 });
@@ -27,7 +29,8 @@ app.use((req, res, next) => {
 // =====================
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || [],
-  methods: ['GET']
+  methods: ['GET'],
+  allowedHeaders: ['Content-Type']
 }));
 
 // =====================
@@ -35,15 +38,22 @@ app.use(cors({
 // =====================
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL,
-  legacyMode: false
+  socket: {
+    tls: process.env.NODE_ENV === 'production',
+    rejectUnauthorized: false
+  }
 });
+
+redisClient.on('error', (err) => 
+  console.error('Redis connection error:', err));
 
 const rateLimiter = new RateLimiterRedis({
   storeClient: redisClient,
   keyPrefix: 'proxyLimiter',
-  points: 100,       // 100 requests
-  duration: 60,      // per 60 seconds
-  blockDuration: 300 // Block for 5 minutes if exceeded
+  points: parseInt(process.env.RATE_LIMIT_POINTS) || 100,
+  duration: parseInt(process.env.RATE_LIMIT_DURATION) || 60,
+  blockDuration: parseInt(process.env.RATE_LIMIT_BLOCK) || 300,
+  inmemoryBlockOnConsumed: parseInt(process.env.RATE_LIMIT_POINTS) || 100
 });
 
 // =====================
@@ -52,48 +62,84 @@ const rateLimiter = new RateLimiterRedis({
 app.get('/proxy', 
   async (req, res, next) => {
     try {
-      await rateLimiter.consume(req.ip);
+      const clientIP = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+      await rateLimiter.consume(clientIP);
       next();
-    } catch {
-      res.status(429).send('Too Many Requests');
+    } catch (error) {
+      res.status(429).json({
+        error: 'Too many requests',
+        message: 'Please try again later'
+      });
     }
   },
   async (req, res) => {
     try {
-      const url = decodeURIComponent(req.query.url);
+      const url = new URL(decodeURIComponent(req.query.url));
       
-      if (!url.startsWith('https://www.whitehouse.gov/')) {
-        return res.status(400).send('Invalid URL');
+      // Validate URL structure
+      if (!isValidWhiteHouseUrl(url)) {
+        return res.status(400).json({ 
+          error: 'Invalid request',
+          message: 'Invalid URL format'
+        });
       }
 
-      const cached = await redisClient.get(url);
+      // Check cache
+      const cached = await redisClient.get(url.href);
       if (cached) {
         const { data, headers } = JSON.parse(cached);
         res.set(headers);
         return res.send(data);
       }
 
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      
+      // Fetch and process
+      const response = await fetch(url.href, {
+        timeout: 5000,
+        headers: {
+          'User-Agent': process.env.USER_AGENT || 'WhiteHouseActionsTracker/1.0'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} ${response.statusText}`);
+      }
+
       const data = await response.text();
       const headers = {
-        'Content-Type': response.headers.get('Content-Type')
+        'Content-Type': response.headers.get('Content-Type'),
+        'Cache-Control': `public, max-age=${Math.floor(CACHE_TTL/1000)}`
       };
 
-      await redisClient.set(url, JSON.stringify({ data, headers }), {
-        PX: 300000 // 5 minute cache
+      // Store in cache
+      await redisClient.set(url.href, JSON.stringify({ data, headers }), {
+        PX: CACHE_TTL
       });
-      
-      res.set(headers);
-      res.send(data);
+
+      res.set(headers).send(data);
 
     } catch (error) {
       console.error('Proxy error:', error);
-      res.status(500).send(error.message || 'Internal Server Error');
+      res.status(500).json({
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' 
+          ? error.message 
+          : 'Please try again later'
+      });
     }
   }
 );
+
+// =====================
+// Health Check Endpoint
+// =====================
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    memoryUsage: process.memoryUsage()
+  });
+});
 
 // =====================
 // Server Management
@@ -101,9 +147,12 @@ app.get('/proxy',
 async function startServer() {
   try {
     await redisClient.connect();
+    
     app.listen(port, () => {
       console.log(`Server running on port ${port}`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`Allowed origins: ${process.env.ALLOWED_ORIGINS || 'none'}`);
+      console.log(`Cache TTL: ${CACHE_TTL}ms`);
     });
   } catch (error) {
     console.error('Server startup failed:', error);
@@ -111,14 +160,27 @@ async function startServer() {
   }
 }
 
-process.on('SIGTERM', async () => {
-  await redisClient.quit();
-  process.exit(0);
-});
+// =====================
+// Utility Functions
+// =====================
+function isValidWhiteHouseUrl(url) {
+  const whitelistRegex = /^https:\/\/www\.whitehouse\.gov\/(feed|briefing-room|wp-json)/i;
+  return whitelistRegex.test(url.href);
+}
 
-process.on('SIGINT', async () => {
+// =====================
+// Process Management
+// =====================
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+async function gracefulShutdown() {
+  console.log('Shutting down gracefully...');
   await redisClient.quit();
-  process.exit(0);
-});
+  server.close(() => {
+    console.log('Server terminated');
+    process.exit(0);
+  });
+}
 
 startServer();

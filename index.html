@@ -3,8 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' https: 'unsafe-inline' 'unsafe-eval';">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <title>White House Presidential Actions Tracker</title>
     <link rel="stylesheet" href="style.css">
+    <!-- Cloudflare Web Analytics -->
+    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "YOUR_TOKEN"}'></script>
+    <!-- End Cloudflare Web Analytics -->
 </head>
 <body>
     <header>
@@ -23,6 +28,64 @@
     </footer>
 
     <script>
+        // Cache configuration
+const CACHE_TTL = 3600000; // 1 hour
+
+// Check cached data
+const cachedData = localStorage.getItem('whActionsCache');
+const cacheTime = localStorage.getItem('whActionsCacheTime');
+
+if (cachedData && cacheTime && Date.now() - cacheTime < CACHE_TTL) {
+    renderActions(JSON.parse(cachedData));
+    document.getElementById('loading').style.display = 'none';
+} else {
+    fetchPresidentialActions();
+}
+
+async function fetchPresidentialActions() {
+    try {
+        // ... existing fetch code ...
+        
+        // After processing data
+        const dataToCache = Array.from(items)
+            .filter(item => 
+                Array.from(item.getElementsByTagName('category'))
+                .some(cat => cat.textContent === 'Presidential Actions')
+            )
+            .map(item => ({
+                title: item.getElementsByTagName('title')[0].textContent,
+                link: item.getElementsByTagName('link')[0].textContent,
+                pubDate: item.getElementsByTagName('pubDate')[0].textContent,
+                description: item.getElementsByTagName('description')[0].textContent
+            }));
+
+        localStorage.setItem('whActionsCache', JSON.stringify(dataToCache));
+        localStorage.setItem('whActionsCacheTime', Date.now());
+        
+    } catch (error) {
+        // ... existing error handling ...
+    }
+}
+
+function renderActions(data) {
+    const actionsContainer = document.getElementById('actions-container');
+    actionsContainer.innerHTML = '';
+    
+    data.forEach(item => {
+        const pubDate = new Date(item.pubDate);
+        const actionCard = document.createElement('article');
+        actionCard.className = 'action-card';
+        actionCard.innerHTML = `
+            <p class="action-date">${pubDate.toLocaleDateString('en-US', { dateStyle: 'long' })}</p>
+            <h2 class="action-title">${item.title}</h2>
+            <div class="action-summary">
+                <p>${item.description}</p>
+            </div>
+            <a href="${item.link}" class="full-document-link" target="_blank" rel="noopener">Read Full Document</a>
+        `;
+        actionsContainer.appendChild(actionCard);
+    });
+}
         async function fetchPresidentialActions() {
             try {
                 const proxyUrl = 'https://corsproxy.io/?';
@@ -79,5 +142,10 @@
         // Initial load
         fetchPresidentialActions();
     </script>
+    <div class="refresh-button" onclick="refreshData()">⟳ Refresh Data</div>
+    <!-- Add before container div -->
+<div class="search-container">
+    <input type="text" id="searchInput" placeholder="Search actions...">
+</div>
 </body>
 </html>

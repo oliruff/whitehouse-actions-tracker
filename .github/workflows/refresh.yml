@@ -1,0 +1,12 @@
+name: Daily Refresh
+on:
+  schedule:
+    - cron: '0 0 * * *' # Runs daily at midnight UTC
+  workflow_dispatch: # Allow manual triggers
+jobs:
+  trigger-netlify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Netlify build
+        run: |
+          curl -X POST "https://api.netlify.com/build_hooks/679be82f16bd5b3c73a4d4e5"

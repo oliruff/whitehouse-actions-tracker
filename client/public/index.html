@@ -66,7 +66,7 @@
         const MAX_RETRIES = 3;
         let retryCount = 0;
         const PROXY_URL = 'https://whitehouse-actions-tracker.onrender.com/proxy?url=';
-        const WH_FEED = 'https://www.whitehouse.gov/feed/';
+        const WH_FEED = 'https://www.whitehouse.gov/presidential-actions/';
 
         // Initialization
         document.addEventListener('DOMContentLoaded', initializeApp);
@@ -95,12 +95,13 @@
 
         async function fetchPresidentialActions() {
             showLoading();
-            
+    
             try {
                 const response = await fetchWithRetry();
                 const data = await processResponse(response);
-                cacheData(data);
-                renderActions(data);
+                const presidentialActions = data.filter(action => action.link.includes('/presidential-actions/'));
+                cacheData(presidentialActions);
+                renderActions(presidentialActions);
                 retryCount = 0;
             } catch (error) {
                 handleFetchError(error);
@@ -131,19 +132,18 @@
 
         function extractActions(xmlDoc) {
             return Array.from(xmlDoc.getElementsByTagName('item'))
-                .filter(item => Array.from(item.getElementsByTagName('category'))
-                    .some(cat => cat.textContent === 'Presidential Actions'))
                 .map(item => ({
-                    title: sanitizeHTML(item.getElementsByTagName('title')[0].textContent),
-                    link: item.getElementsByTagName('link')[0].textContent,
-                    pubDate: item.getElementsByTagName('pubDate')[0].textContent,
-                    description: sanitizeHTML(item.getElementsByTagName('description')[0].textContent)
-                }));
+                    title: sanitizeHTML(item.getElementsByTagName('title')[0]?.textContent || 'No Title'),
+                    link: item.getElementsByTagName('link')[0]?.textContent || '#',
+                    pubDate: item.getElementsByTagName('pubDate')[0]?.textContent || 'Unknown Date',
+                    description: sanitizeHTML(item.getElementsByTagName('description')[0]?.textContent || 'No Description')
+                }))
+                .filter(action => action.link.includes('/presidential-actions/'));
         }
 
         function cacheData(data) {
-            localStorage.setItem('whActionsCache', JSON.stringify(data));
-            localStorage.setItem('whActionsCacheTime', Date.now());
+            localStorage.setItem('presidentialActionsCache', JSON.stringify(data));
+            localStorage.setItem('presidentialActionsCacheTime', Date.now());
         }
 
         function renderActions(actions) {
@@ -174,7 +174,7 @@
                    class="full-document-link" 
                    target="_blank" 
                    rel="noopener noreferrer">
-                    Read Full Document
+                    Read Full Document on WhiteHouse.gov
                 </a>
             `;
             return actionCard;
@@ -188,7 +188,13 @@
 
         function handleFetchError(error) {
             console.error('Fetch error:', error);
-            showError(`Failed to load data: ${error.message}`);
+            if (error.message.includes('429')) {
+                showError('Too many requests. Please try again later.');
+            } else if (error.message.includes('500')) {
+                showError('Server error. Please try again later.');
+            } else {
+                showError(`Failed to load data: ${error.message}`);
+            }
             hideLoading();
         }
 

@@ -85,7 +85,10 @@ app.get('/proxy',
       }
 
       // Check cache
-      const cached = await redisClient.get(url.href);
+      const isPresidentialActions = url.pathname.includes('/presidential-actions/');
+      const cacheKey = isPresidentialActions ? `presidentialActions:${url.href}` : url.href;
+
+      const cached = await redisClient.get(cacheKey);
       if (cached) {
         const { data, headers } = JSON.parse(cached);
         res.set(headers);
@@ -104,14 +107,31 @@ app.get('/proxy',
         throw new Error(`HTTP ${response.status} ${response.statusText}`);
       }
 
-      const data = await response.text();
+      let data = await response.text();
       const headers = {
         'Content-Type': response.headers.get('Content-Type'),
         'Cache-Control': `public, max-age=${Math.floor(CACHE_TTL/1000)}`
       };
 
+      if (isPresidentialActions) {
+        try {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(data, 'text/xml');
+          const items = Array.from(xmlDoc.getElementsByTagName('item')).map(item => ({
+            title: item.getElementsByTagName('title')[0]?.textContent || 'No Title',
+            link: item.getElementsByTagName('link')[0]?.textContent || '#',
+            pubDate: item.getElementsByTagName('pubDate')[0]?.textContent || 'Unknown Date',
+            description: item.getElementsByTagName('description')[0]?.textContent || 'No Description'
+          }));
+          data = JSON.stringify(items);
+        } catch (parseError) {
+          console.error('Error parsing presidential actions feed:', parseError);
+          throw new Error('Failed to parse presidential actions feed');
+        }
+      }
+
       // Store in cache
-      await redisClient.set(url.href, JSON.stringify({ data, headers }), {
+      await redisClient.set(cacheKey, JSON.stringify({ data, headers }), {
         PX: CACHE_TTL
       });
 
@@ -119,12 +139,21 @@ app.get('/proxy',
 
     } catch (error) {
       console.error('Proxy error:', error);
-      res.status(500).json({
-        error: 'Internal server error',
-        message: process.env.NODE_ENV === 'development' 
-          ? error.message 
-          : 'Please try again later'
-      });
+      if (isPresidentialActions) {
+        res.status(500).json({
+          error: 'Failed to fetch presidential actions',
+          message: process.env.NODE_ENV === 'development' 
+            ? error.message 
+            : 'Unable to retrieve presidential actions. Please try again later.'
+        });
+      } else {
+        res.status(500).json({
+          error: 'Internal server error',
+          message: process.env.NODE_ENV === 'development' 
+            ? error.message 
+            : 'Please try again later'
+        });
+      }
     }
   }
 );
@@ -164,7 +193,7 @@ async function startServer() {
 // Utility Functions
 // =====================
 function isValidWhiteHouseUrl(url) {
-  const whitelistRegex = /^https:\/\/www\.whitehouse\.gov\/(feed|briefing-room|wp-json)/i;
+  const whitelistRegex = /^https:\/\/www\.whitehouse\.gov\/(feed|briefing-room|wp-json|presidential-actions)/i;
   return whitelistRegex.test(url.href);
 }
 

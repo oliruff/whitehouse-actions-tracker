@@ -60,9 +60,10 @@ header {
 .action-card {
     background: var(--color-white);
     border-radius: var(--border-radius);
-    padding: var(--spacing-base);
+    padding: calc(var(--spacing-base) * 1.5);
     box-shadow: var(--shadow-base);
-    transition: transform 0.2s ease;
+    border: 1px solid #ddd;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .action-card:hover,
@@ -86,6 +87,8 @@ header {
     color: #444;
     margin-bottom: var(--spacing-base);
     line-height: 1.8;
+    font-size: 1rem;
+    text-align: justify;
 }
 
 /* Document Link Styles */
@@ -95,10 +98,12 @@ header {
     gap: 0.5rem;
     background-color: var(--color-primary);
     color: var(--color-white);
-    padding: 0.8rem 1.5rem;
+    padding: 1rem 2rem;
     border-radius: var(--border-radius);
     text-decoration: none;
-    transition: background-color 0.2s ease;
+    font-weight: bold;
+    font-size: 1rem;
+    transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
 .full-document-link:hover,
@@ -106,6 +111,7 @@ header {
     background-color: var(--color-primary-dark);
     outline: 2px solid var(--color-primary-dark);
     outline-offset: 2px;
+    transform: translateY(-2px);
 }
 
 /* Footer Styles */
@@ -203,6 +209,20 @@ footer {
 
     .action-card {
         padding: var(--spacing-base);
+        font-size: 0.9rem;
+    }
+
+    .action-title {
+        font-size: 1rem;
+    }
+
+    .action-summary {
+        font-size: 0.9rem;
+    }
+
+    .full-document-link {
+        padding: 0.6rem 1rem;
+        font-size: 0.9rem;
     }
 
     .refresh-button {

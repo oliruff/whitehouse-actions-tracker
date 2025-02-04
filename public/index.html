@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" 
+          content="default-src 'self' https://whitehouse-actions-tracker.onrender.com;
+                   script-src 'self' https://static.cloudflareinsights.com;
+                   style-src 'self' 'unsafe-inline';
+                   img-src 'self' data: https://www.whitehouse.gov;
+                   connect-src 'self' https://whitehouse-actions-tracker.onrender.com">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>White House Presidential Actions Tracker</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Cloudflare Web Analytics -->
+    <script defer src='https://static.cloudflareinsights.com/beacon.min.js' 
+            data-cf-beacon='{"token": "YOUR_TOKEN"}'></script>
+</head>
+<body>
+    <header role="banner">
+        <h1 id="main-heading">White House Presidential Actions Tracker</h1>
+        <p>Latest executive orders, memoranda, and proclamations</p>
+    </header>
+
+    <main role="main">
+        <div class="search-container">
+            <input type="text" 
+                   id="searchInput" 
+                   placeholder="Search actions..."
+                   aria-label="Search presidential actions">
+        </div>
+
+        <div class="container">
+            <div id="loading" 
+                 class="loader" 
+                 role="status" 
+                 aria-live="polite">Loading...</div>
+            <div id="actions-container" role="region" aria-live="polite"></div>
+            <div id="error-message" 
+                 class="error-message" 
+                 role="alert" 
+                 aria-live="assertive"></div>
+        </div>
+
+        <button class="refresh-button" 
+                onclick="refreshData()" 
+                aria-label="Refresh data">
+            ⟳ Refresh Data
+        </button>
+    </main>
+
+    <footer role="contentinfo">
+        <p>&copy; 2023 White House Action Tracker. Official documents from 
+            <a href="https://www.whitehouse.gov/presidential-actions/" 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               style="color: white;">
+                whitehouse.gov
+            </a>
+        </p>
+    </footer>
+
+    <script>
+        // Configuration
+        const CACHE_TTL = 3600000; // 1 hour
+        const MAX_RETRIES = 3;
+        let retryCount = 0;
+        const PROXY_URL = 'https://whitehouse-actions-tracker.onrender.com/proxy?url=';
+        const WH_FEED = 'https://www.whitehouse.gov/feed/';
+
+        // Initialization
+        document.addEventListener('DOMContentLoaded', initializeApp);
+
+        function initializeApp() {
+            checkCache();
+            setupSearch();
+            setupRefreshButton();
+        }
+
+        function checkCache() {
+            const cachedData = localStorage.getItem('whActionsCache');
+            const cacheTime = localStorage.getItem('whActionsCacheTime');
+            
+            if (validCache(cachedData, cacheTime)) {
+                renderActions(JSON.parse(cachedData));
+                hideLoading();
+            } else {
+                fetchPresidentialActions();
+            }
+        }
+
+        function validCache(data, timestamp) {
+            return data && timestamp && Date.now() - timestamp < CACHE_TTL;
+        }
+
+        async function fetchPresidentialActions() {
+            showLoading();
+            
+            try {
+                const response = await fetchWithRetry();
+                const data = await processResponse(response);
+                cacheData(data);
+                renderActions(data);
+                retryCount = 0;
+            } catch (error) {
+                handleFetchError(error);
+            }
+        }
+
+        async function fetchWithRetry() {
+            try {
+                const response = await fetch(`${PROXY_URL}${encodeURIComponent(WH_FEED)}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return response;
+            } catch (error) {
+                if (retryCount < MAX_RETRIES) {
+                    retryCount++;
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    return fetchWithRetry();
+                }
+                throw error;
+            }
+        }
+
+        async function processResponse(response) {
+            const data = await response.json();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(data.contents, "text/xml");
+            return extractActions(xmlDoc);
+        }
+
+        function extractActions(xmlDoc) {
+            return Array.from(xmlDoc.getElementsByTagName('item'))
+                .filter(item => Array.from(item.getElementsByTagName('category'))
+                    .some(cat => cat.textContent === 'Presidential Actions'))
+                .map(item => ({
+                    title: sanitizeHTML(item.getElementsByTagName('title')[0].textContent),
+                    link: item.getElementsByTagName('link')[0].textContent,
+                    pubDate: item.getElementsByTagName('pubDate')[0].textContent,
+                    description: sanitizeHTML(item.getElementsByTagName('description')[0].textContent)
+                }));
+        }
+
+        function cacheData(data) {
+            localStorage.setItem('whActionsCache', JSON.stringify(data));
+            localStorage.setItem('whActionsCacheTime', Date.now());
+        }
+
+        function renderActions(actions) {
+            const actionsContainer = document.getElementById('actions-container');
+            actionsContainer.innerHTML = '';
+            
+            if (actions.length === 0) {
+                showError('No recent presidential actions found.');
+                return;
+            }
+
+            actions.forEach(item => {
+                actionsContainer.appendChild(createActionCard(item));
+            });
+        }
+
+        function createActionCard(item) {
+            const pubDate = new Date(item.pubDate);
+            const actionCard = document.createElement('article');
+            actionCard.className = 'action-card';
+            actionCard.innerHTML = `
+                <p class="action-date">${pubDate.toLocaleDateString('en-US', { dateStyle: 'long' })}</p>
+                <h2 class="action-title">${item.title}</h2>
+                <div class="action-summary">
+                    <p>${item.description}</p>
+                </div>
+                <a href="${item.link}" 
+                   class="full-document-link" 
+                   target="_blank" 
+                   rel="noopener noreferrer">
+                    Read Full Document
+                </a>
+            `;
+            return actionCard;
+        }
+
+        function sanitizeHTML(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function handleFetchError(error) {
+            console.error('Fetch error:', error);
+            showError(`Failed to load data: ${error.message}`);
+            hideLoading();
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.innerHTML = `
+                <div class="error-alert">
+                    ⚠️ ${message}
+                    <button class="retry-button" 
+                            onclick="refreshData()" 
+                            aria-label="Retry loading data">
+                        Retry Now
+                    </button>
+                </div>
+            `;
+        }
+
+        function refreshData() {
+            clearCache();
+            clearUI();
+            fetchPresidentialActions();
+        }
+
+        function clearCache() {
+            localStorage.removeItem('whActionsCache');
+            localStorage.removeItem('whActionsCacheTime');
+        }
+
+        function clearUI() {
+            document.getElementById('actions-container').innerHTML = '';
+            document.getElementById('error-message').textContent = '';
+            showLoading();
+        }
+
+        function setupSearch() {
+            const searchInput = document.getElementById('searchInput');
+            searchInput.addEventListener('input', debounce(handleSearch, 300));
+        }
+
+        function handleSearch(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const cards = document.querySelectorAll('.action-card');
+            
+            cards.forEach(card => {
+                const text = card.textContent.toLowerCase();
+                card.style.display = text.includes(searchTerm) ? 'block' : 'none';
+            });
+        }
+
+        function debounce(func, wait) {
+            let timeout;
+            return (...args) => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(this, args), wait);
+            };
+        }
+
+        function setupRefreshButton() {
+            document.querySelector('.refresh-button').addEventListener('click', refreshData);
+        }
+    </script>
+</body>
+</html>
